@@ -36,6 +36,9 @@ pub struct SshCommand {
     allow_error: bool,
     dry_run: bool,
     no_pty: bool,
+    print_login: bool,
+    print_cmd: bool,
+    print_output: bool,
 }
 
 #[derive(Debug)]
@@ -136,6 +139,9 @@ impl SshCommand {
             allow_error: false,
             dry_run: false,
             no_pty: false,
+            print_output: false,
+            print_cmd: false,
+            print_login: false,
         }
     }
 
@@ -172,6 +178,27 @@ impl SshCommand {
         }
     }
 
+    /// Print stdout and stderr?
+    pub fn print_output(self, verbose: bool) -> Self {
+        SshCommand {
+            print_output: verbose,
+            ..self
+        }
+    }
+
+    /// Print the commands as the get executed?
+    pub fn print_cmd(self, print_cmd: bool) -> Self {
+        SshCommand { print_cmd, ..self }
+    }
+
+    /// Print the logins?
+    pub fn print_login(self, print_login: bool) -> Self {
+        SshCommand {
+            print_login,
+            ..self
+        }
+    }
+
     /// Don't request a psuedo-terminal (pty). It turns out that some commands behave differently
     /// with a pty. I'm not really sure what causes this.
     ///
@@ -192,6 +219,9 @@ impl SshCommand {
         allow_error: bool,
         dry_run: bool,
         no_pty: bool,
+        print_output: bool,
+        print_cmd: bool,
+        print_login: bool,
     ) -> Self {
         SshCommand {
             cmd: cmd.into(),
@@ -200,6 +230,9 @@ impl SshCommand {
             allow_error,
             dry_run,
             no_pty,
+            print_output,
+            print_cmd,
+            print_login,
         }
     }
 
@@ -220,6 +253,7 @@ impl SshShell {
     pub fn with_default_key<A: ToSocketAddrs + std::fmt::Debug>(
         username: &str,
         remote: A,
+        verbose: bool,
     ) -> Result<Self, SshError> {
         const DEFAULT_KEY_SUFFIX: &str = ".ssh/id_rsa";
         let home = if let Some(home) = dirs::home_dir() {
@@ -231,7 +265,7 @@ impl SshShell {
             .into());
         };
 
-        SshShell::with_key(username, remote, home.join(DEFAULT_KEY_SUFFIX))
+        SshShell::with_key(username, remote, home.join(DEFAULT_KEY_SUFFIX), verbose)
     }
 
     /// Returns a shell connected via the first private key found at `$HOME/.ssh/` to the given
@@ -243,6 +277,7 @@ impl SshShell {
     pub fn with_any_key<A: Copy + ToSocketAddrs + std::fmt::Debug>(
         username: &str,
         remote: A,
+        verbose: bool,
     ) -> Result<Self, SshError> {
         const DEFAULT_KEY_DIR: &str = ".ssh/";
         let home = if let Some(home) = dirs::home_dir() {
@@ -264,7 +299,7 @@ impl SshShell {
             }
 
             let (priv_key, _) = name.split_at(name.len() - 4);
-            let shell = SshShell::with_key(username, remote, key_dir.join(priv_key));
+            let shell = SshShell::with_key(username, remote, key_dir.join(priv_key), verbose);
 
             if shell.is_ok() {
                 return shell;
@@ -286,6 +321,7 @@ impl SshShell {
         username: &str,
         remote: A,
         key: P,
+        verbose: bool,
     ) -> Result<Self, SshError> {
         info!("New SSH shell: {}@{:?}", username, remote);
         debug!("Using key: {:?}", key.as_ref());
@@ -314,12 +350,14 @@ impl SshShell {
         }
         trace!("SSH session authenticated.");
 
-        println!(
-            "{}",
-            console::style(format!("{}@{} ({})", username, remote_name, remote))
-                .green()
-                .bold()
-        );
+        if verbose {
+            println!(
+                "{}",
+                console::style(format!("{}@{} ({})", username, remote_name, remote))
+                    .green()
+                    .bold()
+            );
+        }
 
         Ok(SshShell {
             tcp,
@@ -429,6 +467,9 @@ impl SshShell {
             allow_error,
             dry_run,
             no_pty,
+            print_output,
+            print_cmd,
+            print_login,
         } = cmd_opts;
 
         // Print the raw command. We are going to modify it slightly before executing (e.g. to
@@ -453,21 +494,23 @@ impl SshShell {
         debug!("After cwd: {:?}", cmd);
 
         // print message
-        if let Some(cwd) = cwd {
-            println!(
-                "{:-<80}\n{}\n{}\n{}",
-                "",
-                console::style(host_and_username).blue(),
-                console::style(cwd.display()).blue(),
-                console::style(msg).yellow().bold()
-            );
-        } else {
-            println!(
-                "{:-<80}\n{}\n{}",
-                "",
-                console::style(host_and_username).blue(),
-                console::style(msg).yellow().bold()
-            );
+        if print_cmd {
+            if let Some(cwd) = cwd {
+                println!(
+                    "{:-<80}\n{}\n{}\n{}",
+                    "",
+                    console::style(host_and_username).blue(),
+                    console::style(cwd.display()).blue(),
+                    console::style(msg).yellow().bold()
+                );
+            } else {
+                println!(
+                    "{:-<80}\n{}\n{}",
+                    "",
+                    console::style(host_and_username).blue(),
+                    console::style(msg).yellow().bold()
+                );
+            }
         }
 
         let mut stdout = String::new();
@@ -500,7 +543,9 @@ impl SshShell {
         while chan.read(&mut buf)? > 0 {
             let out = String::from_utf8_lossy(&buf);
             let out = out.trim_end_matches('\u{0}');
-            print!("{}", out);
+            if print_output {
+                print!("{}", out);
+            };
             stdout.push_str(out);
 
             // clear buf
@@ -524,7 +569,9 @@ impl SshShell {
         while chan.stderr().read(&mut buf)? > 0 {
             let err = String::from_utf8_lossy(&buf);
             let err = err.trim_end_matches('\u{0}');
-            print!("{}", err);
+            if print_output {
+                print!("{}", err);
+            }
             stderr.push_str(err);
 
             // clear buf
